@@ -1,0 +1,205 @@
+name: Rollback ASG Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "rollback" to confirm'
+        required: true
+        type: string
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ inputs.confirm }}" != "rollback" ]; then
+            echo "❌ Rollback cancelled - confirmation not provided"
+            echo "Please type 'rollback' to confirm"
+            exit 1
+          fi
+          echo "✅ Rollback confirmed"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Get current Launch Template info
+        id: get-current
+        run: |
+          CURRENT_VERSION=$(aws ec2 describe-launch-templates \
+            --launch-template-names feedback-app-template \
+            --query 'LaunchTemplates[0].DefaultVersionNumber' \
+            --output text)
+
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current default version: $CURRENT_VERSION"
+
+      - name: Get ASG current state
+        id: get-asg
+        run: |
+          DESIRED=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names feedback-asg \
+            --query 'AutoScalingGroups[0].DesiredCapacity' \
+            --output text)
+
+          MIN=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names feedback-asg \
+            --query 'AutoScalingGroups[0].MinSize' \
+            --output text)
+
+          MAX=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names feedback-asg \
+            --query 'AutoScalingGroups[0].MaxSize' \
+            --output text)
+
+          INSTANCES=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names feedback-asg \
+            --query 'AutoScalingGroups[0].Instances[*].InstanceId' \
+            --output text)
+
+          echo "desired=$DESIRED" >> $GITHUB_OUTPUT
+          echo "min=$MIN" >> $GITHUB_OUTPUT
+          echo "max=$MAX" >> $GITHUB_OUTPUT
+          echo "instances=$INSTANCES" >> $GITHUB_OUTPUT
+
+          echo "Current ASG state:"
+          echo "  Desired: $DESIRED"
+          echo "  Min: $MIN"
+          echo "  Max: $MAX"
+          echo "  Running instances: $INSTANCES"
+
+      - name: Create rollback Launch Template version
+        id: create-rollback-version
+        run: |
+          # Create new version with IMAGE_TAG=previous
+          ROLLBACK_VERSION=$(aws ec2 create-launch-template-version \
+            --launch-template-name feedback-app-template \
+            --source-version '$Latest' \
+            --version-description "Rollback $(date '+%Y-%m-%d %H:%M:%S') - Using 'previous' image tag" \
+            --launch-template-data '{
+              "UserData": "IyEvYmluL2Jhc2gKCiMg67OA7IiYIOyEpOyglQpJTUFHRV9UQUc9InByZXZpb3VzIiAgIyDroqTrsLHrsYMg7YOc6re4Ck1ZU1FMX0hPU1Q9IjEwLjAuMS5YIgpNWVNRTF9EQVRBQkFTRT0iZmVlZGJhY2tkYiIKTVlTUUxfVVNFUj0iZmVlZGJhY2t1c2VyIgpNWVNRTF9QQVNTV09SRD0iRmVlZGJhY2tQYXNzMTIzISIKCiMg7Zuc6rCwIO2MjOydvApMT0dfRklMRT0iL3Zhci9sb2cvdXNlci1kYXRhLmxvZyIKZXhlYyA+ID4odGVlIC1hICR7TE9HX0ZJTEV9KSAyPiYxCgplY2hvICI9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSIKZWNobyAiVXNlciBEYXRhIFNjcmlwdCBTdGFydGVkOiAkKGRhdGUpIgplY2hvICJST0xMQkFDSyBNT0RFOiBVc2luZyBpbWFnZSB0YWcgJ3ByZXZpb3VzJyIKZWNobyAiPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0iCgojIERvY2tlciDshKTsuZgKZWNobyAiWzEvNF0gSW5zdGFsbGluZyBEb2NrZXIuLi4iCnN1ZG8gZG5mIHVwZGF0ZSAteQpzdWRvIGRuZiBpbnN0YWxsIC15IGRvY2tlcgpzdWRvIHN5c3RlbWN0bCBzdGFydCBkb2NrZXIKc3VkbyBzeXN0ZW1jdGwgZW5hYmxlIGRvY2tlcgpzdWRvIHVzZXJtb2QgLWFHIGRvY2tlciBlYzItdXNlcgoKIyBOb2RlIEV4cG9ydGVyIOyEpOy5mCAo7ISg7YOdKQplY2hvICJbMi80XSBJbnN0YWxsaW5nIE5vZGUgRXhwb3J0ZXIuLi4iCmNkIC90bXAKd2dldCBodHRwczovL2dpdGh1Yi5jb20vcHJvbWV0aGV1cy9ub2RlX2V4cG9ydGVyL3JlbGVhc2VzL2Rvd25sb2FkL3YxLjYuMS9ub2RlX2V4cG9ydGVyLTEuNi4xLmxpbnV4LWFtZDY0LnRhci5negp0YXIgeHZmeiBub2RlX2V4cG9ydGVyLTEuNi4xLmxpbnV4LWFtZDY0LnRhci5negpzdWRvIG12IG5vZGVfZXhwb3J0ZXItMS42LjEubGludXgtYW1kNjQvbm9kZV9leHBvcnRlciAvdXNyL2xvY2FsL2Jpbi8Kc3VkbyB1c2VyYWRkIC1ycyAvYmluL2ZhbHNlIG5vZGVfZXhwb3J0ZXIKCnN1ZG8gdGVlIC9ldGMvc3lzdGVtZC9zeXN0ZW0vbm9kZV9leHBvcnRlci5zZXJ2aWNlID4gL2Rldi9udWxsIDw8RU9GCltVbml0XQpEZXNjcmlwdGlvbj1Ob2RlIEV4cG9ydGVyCkFmdGVyPW5ldHdvcmsudGFyZ2V0CgpbU2VydmljZV0KVXNlcj1ub2RlX2V4cG9ydGVyCkdyb3VwPW5vZGVfZXhwb3J0ZXIKVHlwZT1zaW1wbGUKRXhlY1N0YXJ0PS91c3IvbG9jYWwvYmluL25vZGVfZXhwb3J0ZXIKCltJbnN0YWxsXQpXYW50ZWRCeT1tdWx0aS11c2VyLnRhcmdldApFT0YKCnN1ZG8gc3lzdGVtY3RsIGRhZW1vbi1yZWxvYWQKc3VkbyBzeXN0ZW1jdGwgc3RhcnQgbm9kZV9leHBvcnRlcgpzdWRvIHN5c3RlbWN0bCBlbmFibGUgbm9kZV9leHBvcnRlcgoKIyBBcHBsaWNhdGlvbiBEb2NrZXIg7J2066+47KeAIHB1bGwgKFJPTExCQUNLIElNQUdFKQplY2hvICJbMy80XSBQdWxsaW5nIERvY2tlciBpbWFnZSAoUk9MTEJBQ0spLi4uIgpzdWRvIGRvY2tlciBwdWxsIGdoY3IuaW8vam9obmh1aDYxOS9zaW1wbGUtYXBpOiR7SU1BR0VfVEFHfQoKIyBBcHBsaWNhdGlvbiDsi6TtlokgKFJPTExCQUNLKQplY2hvICJbNC80XSBTdGFydGluZyBhcHBsaWNhdGlvbiBjb250YWluZXIgKFJPTExCQUNLKS4uLiIKc3VkbyBkb2NrZXIgcnVuIC1kIFwKICAtLW5hbWUgZmVlZGJhY2stYXBpIFwKICAtLXJlc3RhcnQgdW5sZXNzLXN0b3BwZWQgXAogIC1wIDgwODA6ODA4MCBcCiAgLWUgU1BSSU5HX1BST0ZJTEVTX0FDVElWRT1wcm9kIFwKICAtZSBTUFJJTkdfREFUQVNPVVJDRV9VUkw9amRiYzpteXNxbDovLyR7TVlTUUxfSE9TVH06MzMwNi8ke01ZU1FMX0RBVEFCQVNFFQ91c2VTU0w9ZmFsc2Umc2VydmVyVGltZXpvbmU9QXNpYS9TZW91bCBcCiAgLWUgU1BSSU5HX0RBVEFTt1VSQ0VfVVNFUk5BTUU9JHtNWVNRTF9VU0VSfSBcCiAgLWUgU1BSSU5HX0RBVEFTt1VSQ0VfUEFTU1dPUkQ9JHtNWVNRTF9QQVNTV09SRH0gXAogIGdoY3IuaW8vam9obmh1aDYxOS9zaW1wbGUtYXBpOiR7SU1BR0VfVEFHfQoKIyDtl6zjiqTssrTtgawg64yA6riwCmVjaG8gIldhaXRpbmcgZm9yIGFwcGxpY2F0aW9uIHRvIGJlIHJlYWR5Li4uIgpmb3IgaSBpbiB7MS4uMzB9OyBkbwogIGlmIGN1cmwgLWYgaHR0cDovL2xvY2FsaG9zdDo4MDgwL2FjdHVhdG9yL2hlYWx0aCA+IC9kZXYvbnVsbCAyPiYxOyB0aGVuCiAgICBlY2hvICLinIUgQXBwbGljYXRpb24gaXMgaGVhbHRoeSEiCiAgICBicmVhawogIGZpCiAgZWNobyAiV2FpdGluZy4uLiAoJGkvMzApIgogIHNsZWVwIDEwCmRvbmUKCmVjaG8gIj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09IgplY2hvICJVc2VyIERhdGEgU2NyaXB0IENvbXBsZXRlZDogJChkYXRlKSIKZWNobyAiUk9MTEJBQ0sgQ09NUExFVEVEIgplY2hvICI9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSI="
+            }' \
+            --query 'LaunchTemplateVersion.VersionNumber' \
+            --output text)
+
+          echo "rollback_version=$ROLLBACK_VERSION" >> $GITHUB_OUTPUT
+          echo "Created rollback Launch Template version: $ROLLBACK_VERSION"
+
+      - name: Set rollback version as default
+        run: |
+          aws ec2 modify-launch-template \
+            --launch-template-name feedback-app-template \
+            --default-version ${{ steps.create-rollback-version.outputs.rollback_version }}
+
+          echo "✅ Set Launch Template default version to: ${{ steps.create-rollback-version.outputs.rollback_version }}"
+
+      - name: Start Instance Refresh for rollback
+        id: start-rollback-refresh
+        run: |
+          REFRESH_ID=$(aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name feedback-asg \
+            --preferences '{
+              "MinHealthyPercentage": 50,
+              "InstanceWarmup": 300,
+              "CheckpointPercentages": [50, 100],
+              "CheckpointDelay": 60
+            }' \
+            --query 'InstanceRefreshId' \
+            --output text)
+
+          echo "refresh_id=$REFRESH_ID" >> $GITHUB_OUTPUT
+          echo "Started rollback Instance Refresh: $REFRESH_ID"
+
+      - name: Wait for rollback to complete
+        run: |
+          echo "🔄 Rolling back instances to previous version..."
+          echo "This may take 5-10 minutes..."
+
+          while true; do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name feedback-asg \
+              --instance-refresh-ids ${{ steps.start-rollback-refresh.outputs.refresh_id }} \
+              --query 'InstanceRefreshes[0].Status' \
+              --output text)
+
+            PROGRESS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name feedback-asg \
+              --instance-refresh-ids ${{ steps.start-rollback-refresh.outputs.refresh_id }} \
+              --query 'InstanceRefreshes[0].PercentageComplete' \
+              --output text)
+
+            echo "Status: $STATUS | Progress: $PROGRESS%"
+
+            if [ "$STATUS" = "Successful" ]; then
+              echo "✅ Rollback completed successfully!"
+              break
+            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then
+              echo "❌ Rollback failed with status: $STATUS"
+              exit 1
+            fi
+
+            sleep 30
+          done
+
+      - name: Verify rollback
+        run: |
+          # Get ALB DNS name
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names feedback-alb \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)
+
+          echo "ALB DNS: $ALB_DNS"
+          echo "Testing health endpoint after rollback..."
+
+          # Wait for ALB to update
+          sleep 30
+
+          # Test health endpoint
+          for i in {1..10}; do
+            if curl -f "http://${ALB_DNS}/actuator/health" > /dev/null 2>&1; then
+              echo "✅ Health check passed after rollback!"
+              curl "http://${ALB_DNS}/actuator/health"
+              exit 0
+            fi
+            echo "Waiting for ALB to be ready... ($i/10)"
+            sleep 10
+          done
+
+          echo "⚠️ Health check timeout, but rollback may still be successful"
+          echo "Please verify manually: http://${ALB_DNS}/actuator/health"
+
+      - name: Rollback summary
+        if: always()
+        run: |
+          echo "==================================="
+          echo "🔄 Rollback Summary"
+          echo "==================================="
+          echo "Previous version: ${{ steps.get-current.outputs.current_version }}"
+          echo "Rollback version: ${{ steps.create-rollback-version.outputs.rollback_version }}"
+          echo "Instance Refresh ID: ${{ steps.start-rollback-refresh.outputs.refresh_id }}"
+          echo "Docker Image Tag: previous"
+          echo "==================================="
+          echo ""
+          echo "⚠️ Note: This rollback uses the 'previous' Docker image tag"
+          echo "If you need to rollback database changes, do it separately:"
+          echo "  ssh to MySQL server and restore from backup"
+
+      - name: Get current instances info
+        if: always()
+        run: |
+          echo ""
+          echo "Current running instances:"
+          aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names feedback-asg \
+            --query 'AutoScalingGroups[0].Instances[*].[InstanceId,HealthStatus,LifecycleState]' \
+            --output table

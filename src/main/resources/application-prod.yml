@@ -1,0 +1,54 @@
+spring:
+  datasource:
+    # RDS MySQL 연결 설정 (환경 변수로 주입) .
+    # RDS 생성 후: export DB_HOST=xxx.rds.amazonaws.com
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:feedbackdb}?useSSL=false&serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+    username: ${DB_USER:feedbackuser}
+    password: ${DB_PASSWORD:FeedbackPass123!}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  jpa:
+    database-platform: org.hibernate.dialect.MySQLDialect
+    hibernate:
+      ddl-auto: update  # 개발: update, 프로덕션: validate 권장
+    properties:
+      hibernate:
+        format_sql: true
+        show_sql: false
+        use_sql_comments: false
+        # MySQL 8.0 SEQUENCES 테이블 문제 해결
+        dialect:
+          database_minor_version: 0
+        temp:
+          use_jdbc_metadata_defaults: false
+    open-in-view: false
+
+  # 정적 리소스 비활성화 (CloudFront에서 S3로 서빙)
+  web:
+    resources:
+      add-mappings: false
+
+logging:
+  level:
+    root: INFO
+    com.feedback.api: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+

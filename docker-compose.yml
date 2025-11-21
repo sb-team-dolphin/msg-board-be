@@ -1,0 +1,45 @@
+services:
+  feedback-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: feedback-api:latest
+    container_name: feedback-api
+    ports:
+      - "8080:8080"
+    volumes:
+      # Log files persistence (Docker volume)
+      - feedback-logs:/app/logs
+    environment:
+      # Spring profiles
+      - SPRING_PROFILES_ACTIVE=prod
+      - SPRING_JPA_DATABASE_PLATFORM=org.hibernate.dialect.MySQLDialect
+      - SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT=org.hibernate.dialect.MySQLDialect
+      # JVM options
+      - JAVA_OPTS=-Xmx512m -Xms256m
+      # RDS MySQL connection (환경 변수 필수 - .env 파일 또는 GitHub Secrets 사용)
+      - DB_HOST=${DB_HOST:?DB_HOST is required}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_NAME=${DB_NAME:-feedbackdb}
+      - DB_USER=${DB_USER:?DB_USER is required}
+      - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD is required}
+      # Logging
+      - LOGGING_FILE_NAME=/app/logs/feedback-api.log
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - feedback-network
+
+volumes:
+  feedback-logs:
+    name: feedback-logs
+    external: true
+
+networks:
+  feedback-network:
+    driver: bridge

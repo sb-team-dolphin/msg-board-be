@@ -1,0 +1,210 @@
+name: Deploy to ASG (Auto Scaling Group)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  IMAGE_REGISTRY: ghcr.io
+  IMAGE_NAME: johnhuh619/simple-api
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build with Gradle
+        run: ./gradlew clean build
+
+      - name: Run tests
+        run: ./gradlew test
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag previous image as 'previous' (for rollback)
+        run: |
+          # Pull current 'latest' image
+          docker pull ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:latest || echo "No previous image found"
+
+          # Tag it as 'previous'
+          docker tag ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+                     ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:previous || echo "Skipping tag"
+
+          # Push 'previous' tag
+          docker push ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:previous || echo "Skipping push"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Get current Launch Template version
+        id: get-lt-version
+        run: |
+          CURRENT_VERSION=$(aws ec2 describe-launch-templates \
+            --launch-template-names feedback-app-template \
+            --query 'LaunchTemplates[0].LatestVersionNumber' \
+            --output text)
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create new Launch Template version
+        id: create-lt-version
+        run: |
+          # Get the current default version details
+          CURRENT_LT=$(aws ec2 describe-launch-template-versions \
+            --launch-template-name feedback-app-template \
+            --versions '$Latest' \
+            --query 'LaunchTemplateVersions[0]' \
+            --output json)
+
+          # Create new version with IMAGE_TAG=latest
+          NEW_VERSION=$(aws ec2 create-launch-template-version \
+            --launch-template-name feedback-app-template \
+            --source-version '$Latest' \
+            --version-description "Deployed $(date '+%Y-%m-%d %H:%M:%S') - SHA: ${{ github.sha }}" \
+            --launch-template-data '{
+              "UserData": "IyEvYmluL2Jhc2gKCiMg67OA7IiYIOyEpOyglQpJTUFHRV9UQUc9ImxhdGVzdCIKTVlTUUxfSE9TVD0iMTAuMC4xLlgiCk1ZU1FMX0RBVEFCQVNFPSJ mZWVkYmFja2RiIgpNWVNRTF9VU0VSPSJmZWVkYmFja3VzZXIiCk1ZU1FMX1BBU1NXT1JEPSJGZWVKYMFJA1Bhc3MxMjMhIgoKIyDroZzsmIwg7YyM7J28CkxPR19GSUxFPSIvdmFyL2xvZy91c2VyLWRhdGEubG9nIgpleGVjID4gPih0ZWUgLWEgJHtMT0dfRklMRX0pIDI+JjEKCmVjaG8gIj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09IgplY2hvICJVc2VyIERhdGEgU2NyaXB0IFN0YXJ0ZWQ6ICQoZGF0ZSkiCmVjaG8gIj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09IgoKIyBEb2NrZXIg7ISk7LmYCmVjaG8gIlsxLzRdIEluc3RhbGxpbmcgRG9ja2VyLi4uIgpzdWRvIGRuZiB1cGRhdGUgLXkKc3VkbyBkbmYgaW5zdGFsbCAteSBkb2NrZXIKc3VkbyBzeXN0ZW1jdGwgc3RhcnQgZG9ja2VyCnN1ZG8gc3lzdGVtY3RsIGVuYWJsZSBkb2NrZXIKc3VkbyB1c2VybW9kIC1hRyBkb2NrZXIgZWMyLXVzZXIKCiMgTm9kZSBFeHBvcnRlciDshKTsuZgg7Jio6rOQCmVjaG8gIlsyLzRdIEluc3RhbGxpbmcgTm9kZSBFeHBvcnRlci4uLiIKY2QgL3RtcAp3Z2V0IGh0dHBzOi8vZ2l0aHViLmNvbS9wcm9tZXRoZXVzL25vZGVfZXhwb3J0ZXIvcmVsZWFzZXMvZG93bmxvYWQvdjEuNi4xL25vZGVfZXhwb3J0ZXItMS42LjEubGludXgtYW1kNjQudGFyLmd6CnRhciB4dmZ6IG5vZGVfZXhwb3J0ZXItMS42LjEubGludXgtYW1kNjQudGFyLmd6CnN1ZG8gbXYgbm9kZV9leHBvcnRlci0xLjYuMS5saW51eC1hbWQ2NC9ub2RlX2V4cG9ydGVyIC91c3IvbG9jYWwvYmluLwpzdWRvIHVzZXJhZGQgLXJzIC9iaW4vZmFsc2Ugbm9kZV9leHBvcnRlcgoKc3VkbyB0ZWUgL2V0Yy9zeXN0ZW1kL3N5c3RlbS9ub2RlX2V4cG9ydGVyLnNlcnZpY2UgPiAvZGV2L251bGwgPDxFT0YKW1VuaXRdCkRlc2NyaXB0aW9uPU5vZGUgRXhwb3J0ZXIKQWZ0ZXI9bmV0d29yay50YXJnZXQKCltTZXJ2aWNlXQpVc2VyPW5vZGVfZXhwb3J0ZXIKR3JvdXA9bm9kZV9leHBvcnRlcgpUeXBlPXNpbXBsZQpFeGVjU3RhcnQ9L3Vzci9sb2NhbC9iaW4vbm9kZV9leHBvcnRlcgoKW0luc3RhbGxdCldhbnRlZEJ5PW11bHRpLXVzZXIudGFyZ2V0CkVPRgoKc3VkbyBzeXN0ZW1jdGwgZGFlbW9uLXJlbG9hZApzdWRvIHN5c3RlbWN0bCBzdGFydCBub2RlX2V4cG9ydGVyCnN1ZG8gc3lzdGVtY3RsIGVuYWJsZSBub2RlX2V4cG9ydGVyCgojIEFwcGxpY2F0aW9uIERvY2tlciDsnbTrr7jsp4Ag cHVsbAplY2hvICJbMy80XSBQdWxsaW5nIERvY2tlciBpbWFnZS4uLiIKc3VkbyBkb2NrZXIgcHVsbCBnaGNyLmlvL2pvaG5odWg2MTkvc2ltcGxlLWFwaToke0lNQUdFX1RBR30KCiMgQXBwbGljYXRpb24g7Iuk7ZaJCmVjaG8gIls0LzRdIFN0YXJ0aW5nIGFwcGxpY2F0aW9uIGNvbnRhaW5lci4uLiIKc3VkbyBkb2NrZXIgcnVuIC1kIFwKICAtLW5hbWUgZmVlZGJhY2stYXBpIFwKICAtLXJlc3RhcnQgdW5sZXNzLXN0b3BwZWQgXAogIC1wIDgwODA6ODA4MCBcCiAgLWUgU1BSSU5HX1BST0ZJTEVTX0FDVElWRT1wcm9kIFwKICAtZSBTUFJJTkdfREFUQVNPVVJDRV9VUkw9amRiYzpteXNxbDovLyR7TVlTUUxfSE9TVH06MzMwNi8ke01ZU1FMX0RBVEFCQVNFFQ91c2VTU0w9ZmFsc2Umc2VydmVyVGltZXpvbmU9QXNpYS9TZW91bCBcCiAgLWUgU1BSSU5HX0RBVEFTb1VSQ0VfVVNFUk5BTUU9JHtNWVNRTF9VU0VSfSBcCiAgLWUgU1BSSU5HX0RBVEFTz1VSQ0VfUEFTU1dPUkQ9JHtNWVNRTF9QQVNTV09SRH0gXAogIGdoY3IuaW8vam9obmh1aDYxOS9zaW1wbGUtYXBpOiR7SU1BR0VfVEFHfQoKIyDtl6zjiqTssrTtgawg64yA6riwCmVjaG8gIldhaXRpbmcgZm9yIGFwcGxpY2F0aW9uIHRvIGJlIHJlYWR5Li4uIgpmb3IgaSBpbiB7MS4uMzB9OyBkbwogIGlmIGN1cmwgLWYgaHR0cDovL2xvY2FsaG9zdDo4MDgwL2FjdHVhdG9yL2hlYWx0aCA+IC9kZXYvbnVsbCAyPiYxOyB0aGVuCiAgICBlY2hvICLinIUgQXBwbGljYXRpb24gaXMgaGVhbHRoeSEiCiAgICBicmVhawogIGZpCiAgZWNobyAiV2FpdGluZy4uLiAoJGkvMzApIgogIHNsZWVwIDEwCmRvbmUKCmVjaG8gIj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09IgplY2hvICJVc2VyIERhdGEgU2NyaXB0IENvbXBsZXRlZDogJChkYXRlKSIKZWNobyAiPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0i"
+            }' \
+            --query 'LaunchTemplateVersion.VersionNumber' \
+            --output text)
+
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Created new Launch Template version: $NEW_VERSION"
+
+      - name: Set new version as default
+        run: |
+          aws ec2 modify-launch-template \
+            --launch-template-name feedback-app-template \
+            --default-version ${{ steps.create-lt-version.outputs.new_version }}
+
+      - name: Start Instance Refresh
+        id: start-refresh
+        run: |
+          REFRESH_ID=$(aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name feedback-asg \
+            --preferences '{
+              "MinHealthyPercentage": 50,
+              "InstanceWarmup": 300,
+              "CheckpointPercentages": [50, 100],
+              "CheckpointDelay": 60
+            }' \
+            --query 'InstanceRefreshId' \
+            --output text)
+
+          echo "refresh_id=$REFRESH_ID" >> $GITHUB_OUTPUT
+          echo "Started Instance Refresh: $REFRESH_ID"
+
+      - name: Wait for Instance Refresh to complete
+        run: |
+          echo "Waiting for Instance Refresh to complete..."
+          echo "This may take 5-10 minutes..."
+
+          while true; do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name feedback-asg \
+              --instance-refresh-ids ${{ steps.start-refresh.outputs.refresh_id }} \
+              --query 'InstanceRefreshes[0].Status' \
+              --output text)
+
+            PROGRESS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name feedback-asg \
+              --instance-refresh-ids ${{ steps.start-refresh.outputs.refresh_id }} \
+              --query 'InstanceRefreshes[0].PercentageComplete' \
+              --output text)
+
+            echo "Status: $STATUS | Progress: $PROGRESS%"
+
+            if [ "$STATUS" = "Successful" ]; then
+              echo "✅ Instance Refresh completed successfully!"
+              break
+            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then
+              echo "❌ Instance Refresh failed with status: $STATUS"
+              exit 1
+            fi
+
+            sleep 30
+          done
+
+      - name: Verify deployment
+        run: |
+          # Get ALB DNS name
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names feedback-alb \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)
+
+          echo "ALB DNS: $ALB_DNS"
+          echo "Testing health endpoint..."
+
+          # Wait a bit for ALB to update
+          sleep 30
+
+          # Test health endpoint
+          for i in {1..10}; do
+            if curl -f "http://${ALB_DNS}/actuator/health" > /dev/null 2>&1; then
+              echo "✅ Health check passed!"
+              curl "http://${ALB_DNS}/actuator/health"
+              exit 0
+            fi
+            echo "Waiting for ALB to be ready... ($i/10)"
+            sleep 10
+          done
+
+          echo "⚠️ Health check timeout, but deployment may still be successful"
+          echo "Please verify manually: http://${ALB_DNS}/actuator/health"
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "==================================="
+          echo "🚀 Deployment Summary"
+          echo "==================================="
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Docker Image: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "Git SHA: ${{ github.sha }}"
+          echo "Launch Template Version: ${{ steps.create-lt-version.outputs.new_version }}"
+          echo "Instance Refresh ID: ${{ steps.start-refresh.outputs.refresh_id }}"
+          echo "==================================="
+          echo ""
+          echo "Rollback command (if needed):"
+          echo "  Go to Actions → Run workflow → Rollback ASG"

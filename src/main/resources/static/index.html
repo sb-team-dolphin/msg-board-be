@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>피드백 보드</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <!-- Header -->
+        <header class="text-center mb-12">
+            <h1 class="text-4xl font-bold text-indigo-900 mb-2">피드백 보드v2</h1>
+            <p class="text-gray-600">자유롭게 의견을 남겨주세요!</p>
+        </header>
+
+        <!-- Feedback Form -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+            <h2 class="text-2xl font-semibold text-gray-800 mb-4">새 피드백 작성</h2>
+            <form id="feedbackForm">
+                <div class="mb-4">
+                    <label for="username" class="block text-sm font-medium text-gray-700 mb-2">
+                        이름 (선택)
+                    </label>
+                    <input
+                        type="text"
+                        id="username"
+                        name="username"
+                        maxlength="100"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        placeholder="이름을 입력하세요 (선택사항)"
+                    >
+                </div>
+                <div class="mb-4">
+                    <label for="message" class="block text-sm font-medium text-gray-700 mb-2">
+                        메시지 <span class="text-red-500">*</span>
+                    </label>
+                    <textarea
+                        id="message"
+                        name="message"
+                        rows="4"
+                        maxlength="1000"
+                        required
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+                        placeholder="피드백을 입력하세요..."
+                    ></textarea>
+                    <div class="text-right text-sm text-gray-500 mt-1">
+                        <span id="charCount">0</span> / 1000
+                    </div>
+                </div>
+                <div class="flex justify-end">
+                    <button
+                        type="submit"
+                        class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-6 py-2 rounded-lg transition duration-200 shadow-md hover:shadow-lg"
+                    >
+                        작성하기
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Filter Section -->
+        <div class="bg-white rounded-lg shadow-lg p-4 mb-6">
+            <div class="flex flex-wrap gap-4 items-center">
+                <div class="flex-1 min-w-[200px]">
+                    <input
+                        type="text"
+                        id="filterUsername"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        placeholder="사용자 이름으로 필터링..."
+                    >
+                </div>
+                <button
+                    id="filterBtn"
+                    class="bg-gray-600 hover:bg-gray-700 text-white font-semibold px-6 py-2 rounded-lg transition duration-200"
+                >
+                    필터 적용
+                </button>
+                <button
+                    id="clearFilterBtn"
+                    class="bg-gray-400 hover:bg-gray-500 text-white font-semibold px-6 py-2 rounded-lg transition duration-200"
+                >
+                    필터 해제
+                </button>
+            </div>
+        </div>
+
+        <!-- Feedback List -->
+        <div class="bg-white rounded-lg shadow-lg p-6">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-2xl font-semibold text-gray-800">피드백 목록</h2>
+                <div class="text-sm text-gray-600">
+                    총 <span id="totalCount" class="font-bold text-indigo-600">0</span>개
+                </div>
+            </div>
+
+            <!-- Loading Spinner -->
+            <div id="loading" class="text-center py-12 hidden">
+                <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+                <p class="text-gray-600 mt-4">로딩 중...</p>
+            </div>
+
+            <!-- Error Message -->
+            <div id="error" class="hidden bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+                <p class="font-semibold">오류 발생</p>
+                <p id="errorMessage" class="text-sm"></p>
+            </div>
+
+            <!-- Feedback Items -->
+            <div id="feedbackList" class="space-y-4">
+                <!-- Feedback items will be inserted here -->
+            </div>
+
+            <!-- Empty State -->
+            <div id="emptyState" class="text-center py-12 hidden">
+                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                </svg>
+                <p class="text-gray-500 mt-4">아직 피드백이 없습니다</p>
+            </div>
+
+            <!-- Pagination -->
+            <div id="pagination" class="mt-6 flex justify-center items-center gap-2">
+                <!-- Pagination buttons will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed top-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg hidden transform transition-all duration-300">
+        <p id="toastMessage"></p>
+    </div>
+
+    <script src="/js/app.js"></script>
+</body>
+</html>

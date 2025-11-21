@@ -1,0 +1,180 @@
+name: Rollback to Previous Version
+# rollback
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type "rollback" to confirm'
+        required: true
+        default: ''
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirmation }}" != "rollback" ]; then
+            echo "❌ Confirmation failed. Please type 'rollback' to proceed."
+            exit 1
+          fi
+          echo "✅ Rollback confirmed"
+
+      - name: Notify rollback start
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*⏮ Rollback Started* by ${{ github.actor }}\nRolling back to previous version..."
+                }
+              }
+            ]
+          }' \
+          $SLACK_WEBHOOK_URL || true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Verify previous image exists
+        run: |
+          echo "Checking if previous image exists..."
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:previous
+          echo "✅ Previous image found"
+
+      - name: SSH to AWS EC2 and rollback
+        uses: appleboy/ssh-action@v0.1.10
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_PAT }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE_REPO: ghcr.io/${{ github.repository }}
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_KEY }}
+          envs: GHCR_TOKEN,GHCR_USER,IMAGE_REPO
+          script: |
+            set -e
+
+            cd ~/feedback-api
+
+            echo "🔐 Logging in to GitHub Container Registry..."
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            echo "⏮ Rolling back to previous version..."
+
+            # Update docker-compose to use previous tag
+            sed -i 's/:latest/:previous/g' docker-compose.yml
+
+            echo "🛑 Stopping current container..."
+            docker compose down
+
+            echo "💾 Finding latest database backup..."
+            LATEST_BACKUP=$(ls -t ~/feedback-api/backups/feedbackdb_*.mv.db 2>/dev/null | head -n 1)
+
+            if [ -n "$LATEST_BACKUP" ]; then
+              echo "📦 Backing up current database from volume..."
+              docker run --rm \
+                -v feedback-data:/data \
+                -v ~/feedback-api/backups:/backup \
+                alpine \
+                cp /data/feedbackdb.mv.db /backup/feedbackdb_before_rollback.mv.db 2>/dev/null || true
+
+              echo "⏮ Restoring database from backup: $LATEST_BACKUP"
+              docker run --rm \
+                -v feedback-data:/data \
+                -v ~/feedback-api/backups:/backup \
+                alpine \
+                sh -c "cp /backup/$(basename $LATEST_BACKUP) /data/feedbackdb.mv.db && chown 1001:1001 /data/feedbackdb.mv.db"
+
+              echo "✅ Database restored to volume"
+            else
+              echo "⚠️ No backup found, keeping current database"
+            fi
+
+            echo "📦 Pulling previous image..."
+            docker pull "$IMAGE_REPO:previous"
+
+            echo "🚀 Starting previous version..."
+            docker compose up -d
+
+            echo "⏱ Waiting for app to start..."
+            sleep 40
+
+            echo "🩺 Running health check..."
+            if curl -f http://localhost:8080/actuator/health > /dev/null 2>&1; then
+              echo "✅ Rollback succeeded!"
+              echo "📊 Container status:"
+              docker compose ps
+
+              # Restore docker-compose.yml to use latest
+              sed -i 's/:previous/:latest/g' docker-compose.yml
+
+              echo "🔓 Logging out from GHCR..."
+              docker logout ghcr.io
+            else
+              echo "❌ Rollback failed! Checking logs..."
+              docker compose logs --tail=50
+              docker logout ghcr.io
+              exit 1
+            fi
+
+      - name: Notify rollback success
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*✅ Rollback Complete*\n⏮ Successfully rolled back to previous version"
+                }
+              },
+              {
+                "type": "context",
+                "elements": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                  }
+                ]
+              }
+            ]
+          }' \
+          $SLACK_WEBHOOK_URL || true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify rollback failure
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*🚨 Rollback Failed*\n<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|Check Logs Now>"
+                }
+              }
+            ]
+          }' \
+          $SLACK_WEBHOOK_URL || true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
