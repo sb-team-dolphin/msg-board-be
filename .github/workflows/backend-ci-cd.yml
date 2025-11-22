@@ -84,8 +84,8 @@ jobs:
     outputs:
       image: ${{ steps.build-image.outputs.image }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # - name: Checkout repository
+      #   uses: actions/checkout@v4
 
       - name: Download JAR artifact
         uses: actions/download-artifact@v4
