@@ -2,7 +2,7 @@ spring:
   datasource:
     # RDS MySQL 연결 설정 (환경 변수로 주입) .
     # RDS 생성 후: export DB_HOST=xxx.rds.amazonaws.com
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:feedbackdb}?useSSL=false&serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:feedbackdb}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=UTF-8
     username: ${DB_USER:feedbackuser}
     password: ${DB_PASSWORD:FeedbackPass123!}
     driver-class-name: com.mysql.cj.jdbc.Driver

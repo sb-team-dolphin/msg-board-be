@@ -18,6 +18,7 @@ env:
   ECR_REPOSITORY: myapp-backend
   ECS_CLUSTER: myapp-cluster
   ECS_SERVICE: myapp-backend-service
+  ECS_TASK_DEFINITION_FAMILY: myapp-backend-task
   CONTAINER_NAME: backend
 
 jobs:
